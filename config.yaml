@@ -13,6 +13,9 @@ symbols:
   - MU
   - COHR
   - BE
+  - IONQ
+  - RKLB
+  - AMKR
 
 # ----------------------------------------------------------------------------
 # Moving average periods (days) - alert will fire when price crosses down
