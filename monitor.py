@@ -74,7 +74,7 @@ class Config:
 
     @classmethod
     def load(cls, path: Path) -> "Config":
-        data = yaml.safe_load(path.read_text())
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
         discord = data.get("discord") or {}
         return cls(
             symbols=[s.upper().strip() for s in data["symbols"]],
@@ -92,14 +92,14 @@ class Config:
 def load_state() -> dict:
     if STATE_PATH.exists():
         try:
-            return json.loads(STATE_PATH.read_text())
+            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            log.warning("state.json corrupt — starting fresh")
+            log.warning("state.json corrupt - starting fresh")
     return {"last_prices": {}, "last_alerts": {}}
 
 
 def save_state(state: dict) -> None:
-    STATE_PATH.write_text(json.dumps(state, indent=2))
+    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

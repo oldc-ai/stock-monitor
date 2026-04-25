@@ -1,20 +1,20 @@
 # ----------------------------------------------------------------------------
-# Stocks to monitor — edit this list. Add/remove tickers freely.
+# Stocks to monitor - edit this list. Add/remove tickers freely.
 # ----------------------------------------------------------------------------
 symbols:
-  - NVDA
-  - TSLA
-  - META
-  - AMZN
-  - AVGO
-  - AAPL
-  - MSFT
-  - GOOGL
-  - PLTR
+  - INTC
   - AMD
+  - AXTI
+  - MXL
+  - AAOI
+  - LITE
+  - SNDK
+  - AEHR
+  - MU
+  - COHR
 
 # ----------------------------------------------------------------------------
-# Moving average periods (days) — alert will fire when price crosses down
+# Moving average periods (days) - alert will fire when price crosses down
 # through any of these SMAs.
 # ----------------------------------------------------------------------------
 moving_averages: [10, 20, 50, 200]
@@ -22,11 +22,11 @@ moving_averages: [10, 20, 50, 200]
 # ----------------------------------------------------------------------------
 # Alert rule
 #   "cross_below": alert only when price crosses DOWN through an SMA
-#                  (prev price was above, current is at/below) — classic dip signal
+#                  (prev price was above, current is at/below) - classic dip signal
 #   "touch":       also alert when price is within `proximity_percent` above
 #                  an SMA (pre-warning that a touch is imminent)
 # ----------------------------------------------------------------------------
-alert_rule: "cross_below"
+alert_rule: "touch"
 proximity_percent: 0.3   # only used when alert_rule == "touch"
 
 # ----------------------------------------------------------------------------
@@ -36,7 +36,7 @@ proximity_percent: 0.3   # only used when alert_rule == "touch"
 check_interval_minutes: 5
 
 # ----------------------------------------------------------------------------
-# Cooldown — don't re-alert the same (symbol, MA) pair within this window.
+# Cooldown - don't re-alert the same (symbol, MA) pair within this window.
 # Prevents alert spam when price oscillates around an MA.
 # ----------------------------------------------------------------------------
 cooldown_hours: 24
