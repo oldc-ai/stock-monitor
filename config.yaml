@@ -12,6 +12,7 @@ symbols:
   - AEHR
   - MU
   - COHR
+  - BE
 
 # ----------------------------------------------------------------------------
 # Moving average periods (days) - alert will fire when price crosses down
