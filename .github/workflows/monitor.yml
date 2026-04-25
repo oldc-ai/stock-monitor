@@ -1,0 +1,64 @@
+name: Stock SMA Monitor
+
+# Run every 5 minutes on weekdays during a UTC window that covers all of US
+# regular trading hours (9:30 AM - 4:00 PM ET) for both EST and EDT.
+#   EST: 14:30 - 21:00 UTC
+#   EDT: 13:30 - 20:00 UTC
+# The script itself checks Alpaca's market clock and exits cleanly when closed,
+# so the buffer hours just become quick no-op runs.
+on:
+  schedule:
+    - cron: "*/5 13-20 * * 1-5"
+  workflow_dispatch:   # allow manual triggers from the Actions tab
+
+permissions:
+  contents: read       # we don't push from this workflow; cache handles state
+
+# Prevent two runs from racing if a previous one ran long.
+concurrency:
+  group: stock-sma-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4   # stay under the 5-min cron interval
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # ---- restore state.json from the most recent cached version ----
+      # Each run writes a unique cache key, and we restore from any prior
+      # `monitor-state-` prefix. State (last prices + cooldown timestamps)
+      # is what lets cross-detection and the 24h cooldown work across runs.
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: monitor-state-${{ github.run_id }}
+          restore-keys: |
+            monitor-state-
+
+      - name: Run monitor (one cycle)
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python monitor.py --once
+
+      # ---- save updated state for the next run ----
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: monitor-state-${{ github.run_id }}
