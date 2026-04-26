@@ -2,20 +2,20 @@
 # Stocks to monitor - edit this list. Add/remove tickers freely.
 # ----------------------------------------------------------------------------
 symbols:
-  - INTC
-  - AMD
-  - AXTI
-  - MXL
   - AAOI
-  - LITE
-  - SNDK
   - AEHR
-  - MU
-  - COHR
-  - BE
-  - IONQ
-  - RKLB
+  - AMD
   - AMKR
+  - AXTI
+  - BE
+  - COHR
+  - INTC
+  - IONQ
+  - LITE
+  - MU
+  - MXL
+  - RKLB
+  - SNDK
 
 # ----------------------------------------------------------------------------
 # Moving average periods (days) - alert will fire when price crosses down
