@@ -52,6 +52,8 @@ jobs:
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+          ALPACA_API_KEY_QICHAO: ${{ secrets.ALPACA_API_KEY_QICHAO }}
+          ALPACA_API_SECRET_QICHAO: ${{ secrets.ALPACA_API_SECRET_QICHAO }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python monitor.py --once
 

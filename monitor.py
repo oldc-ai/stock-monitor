@@ -105,10 +105,27 @@ def save_state(state: dict) -> None:
 # ---------------------------------------------------------------------------
 # Alpaca helpers
 # ---------------------------------------------------------------------------
-def build_data_client() -> StockHistoricalDataClient:
-    key = os.environ["ALPACA_API_KEY"]
-    secret = os.environ["ALPACA_API_SECRET"]
-    return StockHistoricalDataClient(key, secret)
+
+# Each tuple is (key_env, secret_env). Add more pairs here to spread load.
+_ALPACA_KEY_PAIRS = [
+    ("ALPACA_API_KEY", "ALPACA_API_SECRET"),
+    ("ALPACA_API_KEY_QICHAO", "ALPACA_API_SECRET_QICHAO"),
+]
+
+
+def build_data_clients() -> list[StockHistoricalDataClient]:
+    """Return one client per fully-configured key pair found in the environment."""
+    clients = [
+        StockHistoricalDataClient(os.environ[k], os.environ[s])
+        for k, s in _ALPACA_KEY_PAIRS
+        if os.environ.get(k) and os.environ.get(s)
+    ]
+    if not clients:
+        raise RuntimeError(
+            "No Alpaca credentials found. Set at least one key/secret pair: "
+            + ", ".join(f"{k}/{s}" for k, s in _ALPACA_KEY_PAIRS)
+        )
+    return clients
 
 
 def build_trading_client() -> TradingClient:
@@ -313,17 +330,22 @@ def send_test_discord(webhook: str, username: str) -> None:
 # ---------------------------------------------------------------------------
 def run_cycle(
     config: Config,
-    data_client: StockHistoricalDataClient,
+    data_clients: list[StockHistoricalDataClient],
     webhook: str,
     state: dict,
     dry_run: bool = False,
 ) -> None:
-    log.info("Running check cycle on %d symbol(s)", len(config.symbols))
+    n = len(data_clients)
+    log.info("Running check cycle on %d symbol(s) across %d client(s)", len(config.symbols), n)
 
-    # Daily bars change once per day (after market close). Cheap enough to
-    # re-fetch every cycle; simplifies logic.
-    bars_by_sym = fetch_daily_bars(data_client, config.symbols)
-    prices = fetch_latest_prices(data_client, config.symbols)
+    # Distribute symbols round-robin so each client gets an even spread.
+    chunks = [config.symbols[i::n] for i in range(n)]
+    bars_by_sym: dict = {}
+    prices: dict = {}
+    for client, syms in zip(data_clients, chunks):
+        if syms:
+            bars_by_sym.update(fetch_daily_bars(client, syms))
+            prices.update(fetch_latest_prices(client, syms))
 
     now = datetime.now(timezone.utc)
     new_alerts: list[dict] = []
@@ -389,10 +411,17 @@ def main() -> int:
     if ENV_PATH.exists():
         load_dotenv(ENV_PATH)
 
-    for required in ("ALPACA_API_KEY", "ALPACA_API_SECRET", "DISCORD_WEBHOOK_URL"):
-        if not os.environ.get(required):
-            log.error("Missing required env var: %s (put it in .env)", required)
-            return 2
+    if not os.environ.get("DISCORD_WEBHOOK_URL"):
+        log.error("Missing required env var: DISCORD_WEBHOOK_URL (put it in .env)")
+        return 2
+
+    try:
+        data_clients = build_data_clients()
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        return 2
+
+    log.info("Using %d Alpaca data client(s)", len(data_clients))
 
     config = Config.load(CONFIG_PATH)
     webhook = os.environ["DISCORD_WEBHOOK_URL"]
@@ -401,7 +430,6 @@ def main() -> int:
         send_test_discord(webhook, config.discord_username)
         return 0
 
-    data_client = build_data_client()
     trading_client = build_trading_client()
     state = load_state()
 
@@ -409,7 +437,7 @@ def main() -> int:
         if config.market_hours_only and not is_market_open(trading_client):
             log.info("Market closed — skipping (run with market_hours_only=false to override).")
             return 0
-        run_cycle(config, data_client, webhook, state, dry_run=args.dry_run)
+        run_cycle(config, data_clients, webhook, state, dry_run=args.dry_run)
         return 0
 
     # Loop mode
@@ -428,7 +456,7 @@ def main() -> int:
                 time.sleep(min(wait, 15 * 60))  # wake at least every 15 min
                 continue
 
-            run_cycle(config, data_client, webhook, state, dry_run=args.dry_run)
+            run_cycle(config, data_clients, webhook, state, dry_run=args.dry_run)
         except KeyboardInterrupt:
             log.info("Interrupted — exiting.")
             return 0
