@@ -26,6 +26,7 @@ symbols:
   - CRCL   # Circle Internet Financial
   - CRWV   # CoreWeave
   - DAL    # Delta Air Lines
+  - DRAM   # Storage ETF
   - EOSE   # Eos Energy Enterprises
   - GOOGL  # Alphabet (Google)
   - HOOD   # Robinhood Markets
@@ -73,8 +74,8 @@ moving_averages: [10, 20, 50, 200]
 #   "touch":       also alert when price is within `proximity_percent` above
 #                  an SMA (pre-warning that a touch is imminent)
 # ----------------------------------------------------------------------------
-alert_rule: "touch"
-proximity_percent: 0.3   # only used when alert_rule == "touch"
+alert_rule: "cross_below"
+# proximity_percent: 0.3   # only used when alert_rule == "touch"
 
 # ----------------------------------------------------------------------------
 # How often to check prices, in minutes (during US market hours).
