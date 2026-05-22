@@ -2,7 +2,6 @@
 # Stocks to monitor - edit this list. Add/remove tickers freely.
 # ----------------------------------------------------------------------------
 symbols:
-  - AAL    # American Airlines
   - AAOI   # Applied Optoelectronics
   - AAPL   # Apple
   - ADBE   # Adobe
@@ -16,8 +15,6 @@ symbols:
   - ASTS   # AST SpaceMobile
   - ASX    # ASE Technology Holding
   - AXTI   # AXT Inc
-  - BA     # Boeing
-  - BABA   # Alibaba Group
   - BE     # Bloom Energy
   - CDNS   # Cadence Design Systems
   - CEG    # Constellation Energy
@@ -25,10 +22,8 @@ symbols:
   - COIN   # Coinbase
   - CRCL   # Circle Internet Financial
   - CRWV   # CoreWeave
-  - DAL    # Delta Air Lines
   - DRAM   # Storage ETF
   - EOSE   # Eos Energy Enterprises
-  - GOOGL  # Alphabet (Google)
   - HOOD   # Robinhood Markets
   - ICLN   # iShares Global Clean Energy ETF
   - INTC   # Intel
@@ -39,13 +34,12 @@ symbols:
   - LRCX   # Lam Research
   - LSCC   # Lattice Semiconductor
   - MCHP   # Microchip Technology
-  - META   # Meta Platforms
-  - MSFT   # Microsoft
   - MU     # Micron Technology
   - MXL    # MaxLinear
   - NEE    # NextEra Energy
   - NFLX   # Netflix
   - NVT    # nVent Electric
+  - NVTS   # Navitas Semiconductors 
   - OKLO   # Oklo
   - ORCL   # Oracle
   - POET   # POET Technologies
@@ -56,9 +50,7 @@ symbols:
   - SOFI   # SoFi Technologies
   - STM    # STMicroelectronics
   - TSEM   # Tower Semiconductor
-  - TSLA   # Tesla
   - TXN    # Texas Instruments
-  - UAL    # United Airlines
   - VST    # Vistra Corp
 
 # ----------------------------------------------------------------------------
