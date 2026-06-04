@@ -168,8 +168,8 @@ def colour_ivr(val):
 
 styled = (
     df.style
-    .applymap(colour_score, subset=["Score"])
-    .applymap(colour_ivr,   subset=["IVR"])
+    .map(colour_score, subset=["Score"])
+    .map(colour_ivr,   subset=["IVR"])
     .format({
         "Price":       "${:.2f}",
         "Strike":      "${:.2f}",
