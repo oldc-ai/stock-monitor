@@ -87,6 +87,7 @@ def calc_iv_rank(current_iv, iv_series):
     iv_min = iv_series.min()
     iv_max = iv_series.max()
     iv_rank = (current_iv - iv_min) / (iv_max - iv_min) * 100 if iv_max > iv_min else 50
+    iv_rank = max(0.0, min(100.0, iv_rank))  # clamp to valid range
     iv_pct = (iv_series < current_iv).mean() * 100
     return round(iv_rank, 1), round(iv_pct, 1)
 
