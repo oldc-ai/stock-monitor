@@ -72,15 +72,15 @@ with st.sidebar:
     )
 
     margin_pct = st.slider(
-        "Maintenance margin (% of strike)",
+        "Capital held (% of strike)",
         min_value=0.10,
         max_value=1.00,
-        value=0.20,
+        value=1.00,
         step=0.05,
-        help="Fraction of the strike notional your broker holds for a "
-             "cash-secured put sold on margin. Use 1.00 for a fully "
-             "cash-secured put; ~0.20-0.25 for a typical margin account; "
-             "raise to 0.30-0.50 for small-cap / high-vol names brokers mark up.",
+        help="Fraction of the strike notional your broker ties up. 1.00 = fully "
+             "cash-secured (e.g. thinkorswim cash/CSP account showing the full "
+             "strike x 100 BP effect). Lower to ~0.20-0.25 only with naked-put / "
+             "Tier-3 approval; higher floors apply to small-cap / high-vol names.",
     )
 
     run = st.button("Run Scan", type="primary", use_container_width=True)

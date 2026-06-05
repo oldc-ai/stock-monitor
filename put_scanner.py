@@ -162,7 +162,7 @@ def trend_score(closes, price=None):
 # Main scanner per ticker
 # ---------------------------------------------------------------------------
 
-def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float = 0.20) -> dict | None:
+def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float = 1.0) -> dict | None:
     try:
         tk = yf.Ticker(ticker)
 
@@ -490,11 +490,11 @@ def main() -> None:
         help="Risk-free rate (default: 0.05)"
     )
     parser.add_argument(
-        "--margin-pct", type=float, default=0.20,
-        help="Maintenance margin as fraction of strike notional for a "
-             "cash-secured put sold on margin (default: 0.20). Use 1.0 for a "
-             "fully cash-secured put; raise to 0.25-0.50 for small-cap / "
-             "high-vol names your broker marks up."
+        "--margin-pct", type=float, default=1.0,
+        help="Capital held as fraction of strike notional (default: 1.0 = fully "
+             "cash-secured, matches a cash/CSP account like thinkorswim showing "
+             "full strike x 100 BP effect). Lower to ~0.20-0.25 only if you have "
+             "naked-put / Tier-3 approval and your broker frees up margin."
     )
     args = parser.parse_args()
 
