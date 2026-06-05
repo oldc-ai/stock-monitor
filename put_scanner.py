@@ -34,7 +34,14 @@ warnings.filterwarnings("ignore")
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
 
-ET = ZoneInfo("America/New_York")
+# America/New_York requires the IANA tz database. On minimal images (e.g.
+# Streamlit Cloud) it may be missing; fall back to a fixed UTC-5/-4 offset so
+# import never fails. (Approximate DST handling is fine for a market-hours check.)
+try:
+    ET = ZoneInfo("America/New_York")
+except Exception:  # ZoneInfoNotFoundError or missing tzdata
+    from datetime import timezone, timedelta
+    ET = timezone(timedelta(hours=-4))  # Eastern Daylight Time (Mar-Nov)
 
 TARGET_DTE_MIN = 7
 TARGET_DTE_MAX = 21
