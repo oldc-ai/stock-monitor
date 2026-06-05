@@ -228,14 +228,18 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float
                         puts = chain.puts
                         if not puts.empty and "impliedVolatility" in puts.columns:
                             target_strike = find_strike_for_delta(price, T_iv, risk_free_rate, hv20, TARGET_DELTA)
-                            atm_puts = puts[puts["strike"].between(target_strike * 0.90, target_strike * 1.10)]
-                            if not atm_puts.empty:
-                                iv_vals = atm_puts["impliedVolatility"].replace(0, np.nan).dropna()
+                            band = puts[puts["strike"].between(target_strike * 0.90, target_strike * 1.10)]
+                            # Only trust IV from contracts with REAL two-sided
+                            # quotes (bid>0 AND ask>0). Early-session / thin
+                            # strikes report bid=ask=0 with garbage placeholder
+                            # IV (e.g. 0.0625), which must not be used.
+                            if not band.empty and "bid" in band and "ask" in band:
+                                live = band[(band["bid"] > 0) & (band["ask"] > 0)]
+                                iv_vals = live["impliedVolatility"]
+                                iv_vals = iv_vals[(iv_vals > 0.02) & (iv_vals < 5.0)]
                                 if not iv_vals.empty:
-                                    chain_iv = float(iv_vals.mean())
-                                    if 0.02 < chain_iv < 5.0:  # sanity guard
-                                        current_iv = chain_iv
-                                        iv_source = "chain"
+                                    current_iv = float(iv_vals.mean())
+                                    iv_source = "chain"
             except Exception:
                 pass
 
