@@ -71,6 +71,17 @@ with st.sidebar:
         "Risk-free rate", min_value=0.0, max_value=0.20, value=0.05, step=0.005, format="%.3f"
     )
 
+    margin_pct = st.slider(
+        "Margin floor (% of strike)",
+        min_value=0.10,
+        max_value=0.50,
+        value=0.20,
+        step=0.05,
+        help="Naked-put margin requirement floor as a fraction of strike. "
+             "Reg-T is ~10-20%; many brokers mark up small-cap / high-vol names "
+             "to 25-50%. Raise this to be conservative on buying-power yield.",
+    )
+
     run = st.button("Run Scan", type="primary", use_container_width=True)
 
 # ---------------------------------------------------------------------------
@@ -102,7 +113,7 @@ status   = st.empty()
 results = []
 for i, ticker in enumerate(tickers):
     status.text(f"Fetching {ticker}… ({i+1}/{len(tickers)})")
-    r = scan_ticker(ticker, risk_free_rate=float(rate))
+    r = scan_ticker(ticker, risk_free_rate=float(rate), margin_min_pct=float(margin_pct))
     if r:
         results.append(r)
     progress.progress((i + 1) / len(tickers))
@@ -141,9 +152,13 @@ for r in results:
         "Delta":       r["delta"],
         "Premium $":   r["premium"],
         "OTM %":       r["otm_pct"],
+        "Breakeven":   r["breakeven"],
+        "BE Move %":   r["be_move_pct"],
         "IV %":        r["iv_current"],
         "IVR":         r["iv_rank"] or 0,
-        "Ann Yield %": r["ann_yield_pct"],
+        "Ann/Collat %": r["ann_yield_pct"],
+        "Ann/BP %":    r["ann_margin_yield"],
+        "Margin $":    r["margin_req"],
         "Trend":       r["trend_score"],
         "Score":       r["composite_score"],
         "Flags":       ", ".join(flags),
@@ -177,15 +192,19 @@ styled = (
     .map(colour_score, subset=["Score"])
     .map(colour_ivr,   subset=["IVR"])
     .format({
-        "Price":       "${:.2f}",
-        "Strike":      "${:.2f}",
-        "Premium $":   "${:.2f}",
-        "OTM %":       "{:.1f}%",
-        "IV %":        "{:.0f}%",
-        "IVR":         "{:.0f}%",
-        "Ann Yield %": "{:.1f}%",
-        "Score":       "{:.1f}",
-        "Delta":       "{:.2f}",
+        "Price":        "${:.2f}",
+        "Strike":       "${:.2f}",
+        "Premium $":    "${:.2f}",
+        "OTM %":        "{:.1f}%",
+        "Breakeven":    "${:.2f}",
+        "BE Move %":    "{:.1f}%",
+        "IV %":         "{:.0f}%",
+        "IVR":          "{:.0f}%",
+        "Ann/Collat %": "{:.1f}%",
+        "Ann/BP %":     "{:.1f}%",
+        "Margin $":     "${:,.0f}",
+        "Score":        "{:.1f}",
+        "Delta":        "{:.2f}",
     })
 )
 
@@ -222,9 +241,15 @@ with st.expander("Column guide"):
 | **Delta** | Put delta magnitude (~0.25–0.30 target) |
 | **Premium $** | Option premium per share |
 | **OTM %** | How far the strike is below current price |
+| **Breakeven** | Cost basis if assigned = strike − premium |
+| **BE Move %** | How far the stock must drop to reach breakeven |
 | **IV %** | Implied/realised volatility annualised |
 | **IVR** | IV Rank — where current IV sits in its 52-week range (higher = more elevated, better to sell) |
-| **Ann Yield %** | Annualised premium yield on collateral held |
+| **Ann/Collat %** | Annualised yield on **cash collateral** (cash-secured put = strike × 100) |
+| **Ann/BP %** | Annualised yield on **buying power** (margin / naked put — uses the margin floor set in the sidebar) |
+| **Margin $** | Estimated Reg-T margin / buying-power tied up per contract |
 | **Trend** | Trend health score: price vs SMA20/50/200 + momentum (0–100) |
 | **Score** | Composite opportunity score (higher = better) |
+
+*Margin note: the buying-power figure is an approximation using a standard Reg-T naked-put formula with the floor you set. Actual requirements vary by broker, account type (portfolio margin is often lower), and are frequently higher for small-cap / low-priced / high-volatility stocks.*
 """)

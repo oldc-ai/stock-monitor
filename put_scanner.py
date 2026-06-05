@@ -62,6 +62,30 @@ def market_is_open(now: datetime | None = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Margin / buying power for short (naked) puts
+# ---------------------------------------------------------------------------
+
+def naked_put_margin(S: float, K: float, premium: float, min_pct: float = 0.10) -> float:
+    """Reg-T initial margin requirement per share for a short put.
+
+    Standard broker formula — the GREATER of:
+      1. 20% of underlying  - out-of-the-money amount  + premium
+      2. min_pct of strike                              + premium   (floor)
+
+    `min_pct` defaults to 10% (Reg-T). Many brokers raise this floor for
+    small-cap / low-priced / high-volatility names (15-30% is common), so it
+    is configurable. Multiply by 100 for the per-contract dollar amount.
+
+    NOTE: This is an approximation. Actual requirements vary by broker,
+    account type (portfolio margin can be far lower), and the specific stock.
+    """
+    otm_amount = max(0.0, S - K)  # a put is OTM when spot is above the strike
+    req1 = 0.20 * S - otm_amount + premium
+    req2 = min_pct * K + premium
+    return max(req1, req2, premium)  # never less than the credit received
+
+
+# ---------------------------------------------------------------------------
 # Black-Scholes helpers
 # ---------------------------------------------------------------------------
 
@@ -141,7 +165,7 @@ def trend_score(closes, price=None):
 # Main scanner per ticker
 # ---------------------------------------------------------------------------
 
-def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
+def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float = 0.10) -> dict | None:
     try:
         tk = yf.Ticker(ticker)
 
@@ -284,10 +308,23 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
 
         actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
+        # Return on collateral (cash-secured): collateral = strike * 100
         collateral = strike * 100
         raw_yield = put_premium * 100 / collateral * 100
         annualised_yield = raw_yield / dte_days * 365
         otm_pct = (price - strike) / price * 100
+
+        # Return on buying power (margin / naked put): much higher than the
+        # cash-secured yield because only a fraction of the strike is tied up.
+        margin_per_share = naked_put_margin(price, strike, put_premium, margin_min_pct)
+        margin_req = margin_per_share * 100  # per contract
+        raw_margin_yield = put_premium * 100 / margin_req * 100
+        ann_margin_yield = raw_margin_yield / dte_days * 365
+
+        # Breakeven: assigned stock cost basis = strike minus premium collected
+        breakeven = strike - put_premium
+        be_move_pct = (breakeven - price) / price * 100  # negative = drop to BE
+
         ts = trend_score(closes, price=price)
 
         iv_rank_score = min(iv_rank or 50, 100)
@@ -315,6 +352,10 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
             "iv_pct":          iv_pct,
             "raw_yield_pct":   round(raw_yield, 2),
             "ann_yield_pct":   round(annualised_yield, 1),
+            "margin_req":      round(margin_req, 0),
+            "ann_margin_yield": round(ann_margin_yield, 1),
+            "breakeven":       round(breakeven, 2),
+            "be_move_pct":     round(be_move_pct, 1),
             "trend_score":     ts,
             "composite_score": round(composite, 1),
             "prem_source":     prem_source,
@@ -338,7 +379,8 @@ def print_results(results: list[dict]) -> None:
     header = (
         f"{'#':<3} {'Ticker':<7} {'Price':>7}{'':8} {'Exp':>12} {'DTE':>4} "
         f"{'Strike':>7} {'Delta':>6} {'Prem':>6} {'OTM%':>6} "
-        f"{'IV%':>5} {'IVR':>5} {'Ann%':>6} {'Trend':>5} {'Score':>6} {'Note'}"
+        f"{'BE':>8} {'BE%':>6} {'IV%':>5} {'IVR':>5} {'AnnCol%':>7} {'AnnBP%':>7} "
+        f"{'Trend':>5} {'Score':>6} {'Note'}"
     )
     sep = "-" * len(header)
 
@@ -366,7 +408,8 @@ def print_results(results: list[dict]) -> None:
         print(
             f"{i:<3} {r['ticker']:<7} {r['price']:>7.2f}{price_tag:<8} {r['expiration']:>12} {r['dte']:>4} "
             f"{r['strike']:>7.2f} {r['delta']:>6.2f} {r['premium']:>6.2f} {r['otm_pct']:>5.1f}% "
-            f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['ann_yield_pct']:>5.1f}% "
+            f"{r['breakeven']:>8.2f} {r['be_move_pct']:>5.1f}% "
+            f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['ann_yield_pct']:>6.1f}% {r['ann_margin_yield']:>6.1f}% "
             f"{r['trend_score']:>5} {r['composite_score']:>6.1f}  {', '.join(flags)}"
         )
 
@@ -376,9 +419,12 @@ def print_results(results: list[dict]) -> None:
     print("  Delta    = put delta (magnitude, ~0.25 target)")
     print("  Prem     = option premium per share ($)")
     print("  OTM%     = how far strike is below current price")
+    print("  BE       = breakeven price (strike - premium)")
+    print("  BE%      = % the stock must drop to reach breakeven")
     print("  IV%      = implied/realised volatility annualised")
     print("  IVR      = IV Rank (0-100, higher = more elevated)")
-    print("  Ann%     = annualised premium yield on collateral")
+    print("  AnnCol%  = annualised yield on CASH collateral (cash-secured put)")
+    print("  AnnBP%   = annualised yield on BUYING POWER (margin / naked put)")
     print("  Trend    = trend health score (0-100)")
     print("  Score    = composite opportunity score (higher = better)")
     print()
@@ -445,6 +491,11 @@ def main() -> None:
         "--rate", type=float, default=0.05,
         help="Risk-free rate (default: 0.05)"
     )
+    parser.add_argument(
+        "--margin-pct", type=float, default=0.10,
+        help="Naked-put margin floor as fraction of strike (default: 0.10 Reg-T; "
+             "raise to 0.15-0.30 for small-cap / high-vol names your broker marks up)"
+    )
     args = parser.parse_args()
 
     global TARGET_DTE_MIN, TARGET_DTE_MAX, TARGET_DELTA
@@ -470,7 +521,7 @@ def main() -> None:
     results = []
     for t in tickers:
         print(f"  Fetching {t}...", end=" ", flush=True)
-        r = scan_ticker(t, risk_free_rate=args.rate)
+        r = scan_ticker(t, risk_free_rate=args.rate, margin_min_pct=args.margin_pct)
         if r:
             print(f"score={r['composite_score']}")
             results.append(r)
