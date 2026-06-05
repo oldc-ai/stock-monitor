@@ -20,8 +20,9 @@ Ticker source priority:
 import argparse
 import sys
 import warnings
-from datetime import datetime
+from datetime import datetime, time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import yaml
@@ -33,9 +34,24 @@ warnings.filterwarnings("ignore")
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
 
+ET = ZoneInfo("America/New_York")
+
 TARGET_DTE_MIN = 7
 TARGET_DTE_MAX = 21
 TARGET_DELTA = 0.25
+
+
+def market_is_open(now: datetime | None = None) -> bool:
+    """True if US equity market is in regular session (9:30-16:00 ET, Mon-Fri).
+
+    Ignores holidays (good enough for choosing live vs close-of-day data).
+    Options quotes are only reliable during this window; outside it we fall
+    back to daily-close + historical-vol estimates.
+    """
+    now = now or datetime.now(ET)
+    if now.weekday() >= 5:  # Saturday / Sunday
+        return False
+    return dtime(9, 30) <= now.timetz().replace(tzinfo=None) <= dtime(16, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -122,65 +138,78 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
     try:
         tk = yf.Ticker(ticker)
 
+        mkt_open = market_is_open()
+
         hist = tk.history(period="1y", auto_adjust=True)
         if hist.empty or len(hist) < 30:
             return None
         closes = hist["Close"].dropna()  # drop today's in-progress bar (NaN close)
 
-        # Real-time (15-min delayed) price via fast_info; fall back to last close
-        price_source = "RT"
+        # Price source:
+        #   - Market open  -> live last price (fast_info)
+        #   - Market closed-> last traded price (~ today's close); fall back to
+        #     last daily close. Options markets are shut, so this is the right
+        #     reference for pricing tomorrow's contracts.
+        price_source = "live" if mkt_open else "close"
+        price = None
         try:
             rt_price = tk.fast_info.last_price
             if rt_price and rt_price > 0:
-                price = rt_price
-            else:
-                price = closes.iloc[-1]
-                price_source = "close"
+                price = float(rt_price)
         except Exception:
-            price = closes.iloc[-1]
+            pass
+        if price is None:
+            price = float(closes.iloc[-1])
             price_source = "close"
 
         hv20 = calc_hv(closes, 20)
         if hv20 is None:
             return None
 
+        # IV source: historical-vol baseline (always reliable). Only override
+        # with live options-chain IV during market hours, when quotes are real.
+        # After hours the chain returns stale/zero IV which corrupts everything.
         current_iv = hv20
+        iv_source = "HV"
 
-        # Try to get implied vol from nearest expiration in target window
-        try:
-            exps = tk.options
-            if exps:
-                now = datetime.now()
-                target_exps = []
-                for e in exps:
-                    exp_dt = datetime.strptime(e, "%Y-%m-%d")
-                    dte = (exp_dt - now).days
-                    if TARGET_DTE_MIN <= dte <= TARGET_DTE_MAX:
-                        target_exps.append((dte, e))
-                    elif dte > TARGET_DTE_MAX:
-                        break
-                if not target_exps:
+        if mkt_open:
+            try:
+                exps = tk.options
+                if exps:
+                    now = datetime.now()
+                    target_exps = []
                     for e in exps:
                         exp_dt = datetime.strptime(e, "%Y-%m-%d")
                         dte = (exp_dt - now).days
-                        if dte >= TARGET_DTE_MIN:
+                        if TARGET_DTE_MIN <= dte <= TARGET_DTE_MAX:
                             target_exps.append((dte, e))
+                        elif dte > TARGET_DTE_MAX:
                             break
-                if target_exps:
-                    target_exps.sort()
-                    dte_days_iv, exp_str_iv = target_exps[0]
-                    T_iv = dte_days_iv / 365
-                    chain = tk.option_chain(exp_str_iv)
-                    puts = chain.puts
-                    if not puts.empty and "impliedVolatility" in puts.columns:
-                        target_strike = find_strike_for_delta(price, T_iv, risk_free_rate, hv20, TARGET_DELTA)
-                        atm_puts = puts[puts["strike"].between(target_strike * 0.90, target_strike * 1.10)]
-                        if not atm_puts.empty:
-                            iv_vals = atm_puts["impliedVolatility"].replace(0, np.nan).dropna()
-                            if not iv_vals.empty:
-                                current_iv = float(iv_vals.mean())
-        except Exception:
-            pass
+                    if not target_exps:
+                        for e in exps:
+                            exp_dt = datetime.strptime(e, "%Y-%m-%d")
+                            dte = (exp_dt - now).days
+                            if dte >= TARGET_DTE_MIN:
+                                target_exps.append((dte, e))
+                                break
+                    if target_exps:
+                        target_exps.sort()
+                        dte_days_iv, exp_str_iv = target_exps[0]
+                        T_iv = dte_days_iv / 365
+                        chain = tk.option_chain(exp_str_iv)
+                        puts = chain.puts
+                        if not puts.empty and "impliedVolatility" in puts.columns:
+                            target_strike = find_strike_for_delta(price, T_iv, risk_free_rate, hv20, TARGET_DELTA)
+                            atm_puts = puts[puts["strike"].between(target_strike * 0.90, target_strike * 1.10)]
+                            if not atm_puts.empty:
+                                iv_vals = atm_puts["impliedVolatility"].replace(0, np.nan).dropna()
+                                if not iv_vals.empty:
+                                    chain_iv = float(iv_vals.mean())
+                                    if 0.02 < chain_iv < 5.0:  # sanity guard
+                                        current_iv = chain_iv
+                                        iv_source = "chain"
+            except Exception:
+                pass
 
         log_ret = np.log(closes / closes.shift(1)).dropna()
         iv_series = log_ret.rolling(20).std().dropna() * np.sqrt(252)
@@ -209,19 +238,22 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
         put_premium = bs_put_price(price, strike, T, risk_free_rate, current_iv)
         actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
-        # Try to fetch actual market bid
+        # Use the live market bid only during market hours (after hours the
+        # bid is 0 / stale). Otherwise keep the Black-Scholes estimate.
         market_bid = None
-        try:
-            chain = tk.option_chain(exp_str)
-            puts = chain.puts
-            if not puts.empty:
-                row = puts.iloc[(puts["strike"] - strike).abs().argsort()[:1]]
-                market_bid = float(row["bid"].values[0])
-                if market_bid > 0:
-                    put_premium = market_bid
-                    strike = float(row["strike"].values[0])
-        except Exception:
-            pass
+        if mkt_open:
+            try:
+                chain = tk.option_chain(exp_str)
+                puts = chain.puts
+                if not puts.empty:
+                    row = puts.iloc[(puts["strike"] - strike).abs().argsort()[:1]]
+                    bid = float(row["bid"].values[0])
+                    if bid > 0:
+                        market_bid = bid
+                        put_premium = bid
+                        strike = float(row["strike"].values[0])
+            except Exception:
+                pass
 
         collateral = strike * 100
         raw_yield = put_premium * 100 / collateral * 100
@@ -258,6 +290,8 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
             "composite_score": round(composite, 1),
             "prem_source":     "market bid" if market_bid else "BS estimate",
             "price_source":    price_source,
+            "iv_source":       iv_source,
+            "market_open":     mkt_open,
         }
 
     except Exception as e:
@@ -273,14 +307,17 @@ def print_results(results: list[dict]) -> None:
     results = sorted(results, key=lambda x: x["composite_score"], reverse=True)
 
     header = (
-        f"{'#':<3} {'Ticker':<7} {'Price':>7}{'':5} {'Exp':>12} {'DTE':>4} "
+        f"{'#':<3} {'Ticker':<7} {'Price':>7}{'':8} {'Exp':>12} {'DTE':>4} "
         f"{'Strike':>7} {'Delta':>6} {'Prem':>6} {'OTM%':>6} "
         f"{'IV%':>5} {'IVR':>5} {'Ann%':>6} {'Trend':>5} {'Score':>6} {'Note'}"
     )
     sep = "-" * len(header)
 
+    mkt_open = results[0].get("market_open", False) if results else False
+    mkt_txt = "MARKET OPEN - live quotes" if mkt_open else "MARKET CLOSED - using last close + historical-vol estimates"
+
     print("\n" + "=" * len(header))
-    print("  PUT SELLING OPPORTUNITY SCANNER")
+    print("  PUT SELLING OPPORTUNITY SCANNER   [" + mkt_txt + "]")
     print("=" * len(header))
     print(header)
     print(sep)
@@ -298,7 +335,7 @@ def print_results(results: list[dict]) -> None:
 
         price_tag = f"({r.get('price_source', '?')})"
         print(
-            f"{i:<3} {r['ticker']:<7} {r['price']:>7.2f}{price_tag:<5} {r['expiration']:>12} {r['dte']:>4} "
+            f"{i:<3} {r['ticker']:<7} {r['price']:>7.2f}{price_tag:<8} {r['expiration']:>12} {r['dte']:>4} "
             f"{r['strike']:>7.2f} {r['delta']:>6.2f} {r['premium']:>6.2f} {r['otm_pct']:>5.1f}% "
             f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['ann_yield_pct']:>5.1f}% "
             f"{r['trend_score']:>5} {r['composite_score']:>6.1f}  {', '.join(flags)}"

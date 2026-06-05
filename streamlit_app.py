@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from put_scanner import scan_ticker, TARGET_DTE_MIN, TARGET_DTE_MAX, TARGET_DELTA
 import put_scanner as _ps
+from put_scanner import market_is_open
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
@@ -88,6 +89,11 @@ if not tickers:
 _ps.TARGET_DTE_MIN = int(dte_min)
 _ps.TARGET_DTE_MAX = int(dte_max)
 _ps.TARGET_DELTA   = float(delta)
+
+if market_is_open():
+    st.success("🟢 **Market is open** — using live prices and real-time options quotes.")
+else:
+    st.warning("🔴 **Market is closed** — using last close + historical-volatility estimates (options quotes are stale after hours).")
 
 st.subheader(f"Scanning {len(tickers)} tickers — DTE {dte_min}–{dte_max}, ~{delta:.0%} delta")
 progress = st.progress(0)
