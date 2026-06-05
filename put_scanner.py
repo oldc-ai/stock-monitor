@@ -242,25 +242,31 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
 
         T = dte_days / 365
         strike = find_strike_for_delta(price, T, risk_free_rate, current_iv, TARGET_DELTA)
-        put_premium = bs_put_price(price, strike, T, risk_free_rate, current_iv)
-        actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
-        # Use the live market bid only during market hours (after hours the
-        # bid is 0 / stale). Otherwise keep the Black-Scholes estimate.
+        # Snap the theoretical strike to the nearest REAL listed strike from the
+        # options chain (so we never report something like $227.49). Also grab
+        # the live bid here when the market is open.
         market_bid = None
-        if mkt_open:
-            try:
-                chain = tk.option_chain(exp_str)
-                puts = chain.puts
-                if not puts.empty:
-                    row = puts.iloc[(puts["strike"] - strike).abs().argsort()[:1]]
+        try:
+            chain = tk.option_chain(exp_str)
+            puts = chain.puts
+            if not puts.empty and "strike" in puts.columns:
+                row = puts.iloc[(puts["strike"] - strike).abs().argsort()[:1]]
+                strike = float(row["strike"].values[0])  # nearest real strike
+                if mkt_open:
                     bid = float(row["bid"].values[0])
                     if bid > 0:
                         market_bid = bid
-                        put_premium = bid
-                        strike = float(row["strike"].values[0])
-            except Exception:
-                pass
+        except Exception:
+            pass
+
+        # Premium: live bid during market hours, else Black-Scholes on the
+        # snapped strike. Delta is always recomputed on the snapped strike.
+        if market_bid is not None:
+            put_premium = market_bid
+        else:
+            put_premium = bs_put_price(price, strike, T, risk_free_rate, current_iv)
+        actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
         collateral = strike * 100
         raw_yield = put_premium * 100 / collateral * 100
