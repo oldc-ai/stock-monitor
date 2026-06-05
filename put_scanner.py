@@ -244,28 +244,44 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
         strike = find_strike_for_delta(price, T, risk_free_rate, current_iv, TARGET_DELTA)
 
         # Snap the theoretical strike to the nearest REAL listed strike from the
-        # options chain (so we never report something like $227.49). Also grab
-        # the live bid here when the market is open.
-        market_bid = None
+        # options chain (so we never report something like $227.49), and read
+        # the REAL premium from the chain rather than estimating it.
+        #
+        # Premium priority:
+        #   - Market open  : bid/ask mid (real-time), fall back to lastPrice
+        #   - Market closed : lastPrice (the last real traded value)
+        #   - Only fall back to a Black-Scholes estimate if the contract has no
+        #     real price at all (illiquid / never traded).
+        put_premium = None
+        prem_source = None
         try:
             chain = tk.option_chain(exp_str)
             puts = chain.puts
             if not puts.empty and "strike" in puts.columns:
                 row = puts.iloc[(puts["strike"] - strike).abs().argsort()[:1]]
                 strike = float(row["strike"].values[0])  # nearest real strike
-                if mkt_open:
-                    bid = float(row["bid"].values[0])
-                    if bid > 0:
-                        market_bid = bid
+
+                bid       = float(row["bid"].values[0])       if "bid" in row else 0.0
+                ask       = float(row["ask"].values[0])       if "ask" in row else 0.0
+                last_px   = float(row["lastPrice"].values[0]) if "lastPrice" in row else 0.0
+
+                if mkt_open and bid > 0 and ask > 0:
+                    put_premium = round((bid + ask) / 2, 2)  # real-time mid
+                    prem_source = "mid"
+                elif mkt_open and bid > 0:
+                    put_premium = bid
+                    prem_source = "bid"
+                elif last_px > 0:
+                    put_premium = last_px                     # last real trade
+                    prem_source = "last"
         except Exception:
             pass
 
-        # Premium: live bid during market hours, else Black-Scholes on the
-        # snapped strike. Delta is always recomputed on the snapped strike.
-        if market_bid is not None:
-            put_premium = market_bid
-        else:
+        # Fall back to Black-Scholes only if no real market price was available.
+        if put_premium is None or put_premium <= 0:
             put_premium = bs_put_price(price, strike, T, risk_free_rate, current_iv)
+            prem_source = "BS estimate"
+
         actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
         collateral = strike * 100
@@ -301,7 +317,7 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
             "ann_yield_pct":   round(annualised_yield, 1),
             "trend_score":     ts,
             "composite_score": round(composite, 1),
-            "prem_source":     "market bid" if market_bid else "BS estimate",
+            "prem_source":     prem_source,
             "price_source":    price_source,
             "iv_source":       iv_source,
             "market_open":     mkt_open,
