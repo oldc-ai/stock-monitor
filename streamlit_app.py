@@ -72,14 +72,15 @@ with st.sidebar:
     )
 
     margin_pct = st.slider(
-        "Margin floor (% of strike)",
+        "Maintenance margin (% of strike)",
         min_value=0.10,
-        max_value=0.50,
+        max_value=1.00,
         value=0.20,
         step=0.05,
-        help="Naked-put margin requirement floor as a fraction of strike. "
-             "Reg-T is ~10-20%; many brokers mark up small-cap / high-vol names "
-             "to 25-50%. Raise this to be conservative on buying-power yield.",
+        help="Fraction of the strike notional your broker holds for a "
+             "cash-secured put sold on margin. Use 1.00 for a fully "
+             "cash-secured put; ~0.20-0.25 for a typical margin account; "
+             "raise to 0.30-0.50 for small-cap / high-vol names brokers mark up.",
     )
 
     run = st.button("Run Scan", type="primary", use_container_width=True)
@@ -156,9 +157,9 @@ for r in results:
         "BE Move %":   r["be_move_pct"],
         "IV %":        r["iv_current"],
         "IVR":         r["iv_rank"] or 0,
-        "Ann/Collat %": r["ann_yield_pct"],
-        "Ann/BP %":    r["ann_margin_yield"],
-        "Margin $":    r["margin_req"],
+        "Capital $":   r["capital_req"],
+        "Ann/Cash %":  r["ann_yield_pct"],
+        "Ann/Margin %": r["ann_margin_yield"],
         "Trend":       r["trend_score"],
         "Score":       r["composite_score"],
         "Flags":       ", ".join(flags),
@@ -200,9 +201,9 @@ styled = (
         "BE Move %":    "{:.1f}%",
         "IV %":         "{:.0f}%",
         "IVR":          "{:.0f}%",
-        "Ann/Collat %": "{:.1f}%",
-        "Ann/BP %":     "{:.1f}%",
-        "Margin $":     "${:,.0f}",
+        "Capital $":    "${:,.0f}",
+        "Ann/Cash %":   "{:.1f}%",
+        "Ann/Margin %": "{:.1f}%",
         "Score":        "{:.1f}",
         "Delta":        "{:.2f}",
     })
@@ -245,11 +246,11 @@ with st.expander("Column guide"):
 | **BE Move %** | How far the stock must drop to reach breakeven |
 | **IV %** | Implied/realised volatility annualised |
 | **IVR** | IV Rank — where current IV sits in its 52-week range (higher = more elevated, better to sell) |
-| **Ann/Collat %** | Annualised yield on **cash collateral** (cash-secured put = strike × 100) |
-| **Ann/BP %** | Annualised yield on **buying power** (margin / naked put — uses the margin floor set in the sidebar) |
-| **Margin $** | Estimated Reg-T margin / buying-power tied up per contract |
+| **Capital $** | Buying power tied up per contract = strike × 100 × maintenance% − premium |
+| **Ann/Cash %** | Annualised yield if **fully cash-secured** (100% of strike held) |
+| **Ann/Margin %** | Annualised yield on the **margin capital actually held** (Capital $ — uses the maintenance % set in the sidebar) |
 | **Trend** | Trend health score: price vs SMA20/50/200 + momentum (0–100) |
 | **Score** | Composite opportunity score (higher = better) |
 
-*Margin note: the buying-power figure is an approximation using a standard Reg-T naked-put formula with the floor you set. Actual requirements vary by broker, account type (portfolio margin is often lower), and are frequently higher for small-cap / low-priced / high-volatility stocks.*
+*Margin note: Capital $ is an approximation — it applies your maintenance % to the strike notional. Actual requirements vary by broker, account type, and are frequently higher for small-cap / low-priced / high-volatility stocks.*
 """)

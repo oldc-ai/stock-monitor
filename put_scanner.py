@@ -65,24 +65,21 @@ def market_is_open(now: datetime | None = None) -> bool:
 # Margin / buying power for short (naked) puts
 # ---------------------------------------------------------------------------
 
-def naked_put_margin(S: float, K: float, premium: float, min_pct: float = 0.10) -> float:
-    """Reg-T initial margin requirement per share for a short put.
+def put_capital_required(K: float, premium: float, maintenance_pct: float = 1.0) -> float:
+    """Capital / buying power tied up per contract when selling a put.
 
-    Standard broker formula — the GREATER of:
-      1. 20% of underlying  - out-of-the-money amount  + premium
-      2. min_pct of strike                              + premium   (floor)
+    maintenance_pct is the fraction of the strike notional the broker holds:
+      - 1.00  -> fully cash-secured put (hold the whole strike x 100 in cash)
+      - 0.20  -> margin account holding ~20% maintenance of the strike notional
+                 (a cash-secured put sold on margin)
 
-    `min_pct` defaults to 10% (Reg-T). Many brokers raise this floor for
-    small-cap / low-priced / high-volatility names (15-30% is common), so it
-    is configurable. Multiply by 100 for the per-contract dollar amount.
+    Capital = strike * 100 * maintenance_pct, net of the premium received.
 
-    NOTE: This is an approximation. Actual requirements vary by broker,
-    account type (portfolio margin can be far lower), and the specific stock.
+    NOTE: Approximation. Real maintenance varies by broker and is often higher
+    for small-cap / low-priced / high-volatility stocks.
     """
-    otm_amount = max(0.0, S - K)  # a put is OTM when spot is above the strike
-    req1 = 0.20 * S - otm_amount + premium
-    req2 = min_pct * K + premium
-    return max(req1, req2, premium)  # never less than the credit received
+    requirement = K * 100 * maintenance_pct
+    return max(requirement - premium * 100, premium * 100)  # net of credit
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +162,7 @@ def trend_score(closes, price=None):
 # Main scanner per ticker
 # ---------------------------------------------------------------------------
 
-def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float = 0.10) -> dict | None:
+def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float = 0.20) -> dict | None:
     try:
         tk = yf.Ticker(ticker)
 
@@ -308,17 +305,17 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float
 
         actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
-        # Return on collateral (cash-secured): collateral = strike * 100
+        otm_pct = (price - strike) / price * 100
+
+        # Fully cash-secured yield: 100% of strike notional held in cash.
         collateral = strike * 100
         raw_yield = put_premium * 100 / collateral * 100
         annualised_yield = raw_yield / dte_days * 365
-        otm_pct = (price - strike) / price * 100
 
-        # Return on buying power (margin / naked put): much higher than the
-        # cash-secured yield because only a fraction of the strike is tied up.
-        margin_per_share = naked_put_margin(price, strike, put_premium, margin_min_pct)
-        margin_req = margin_per_share * 100  # per contract
-        raw_margin_yield = put_premium * 100 / margin_req * 100
+        # Cash-secured-on-margin: broker only holds `margin_min_pct` of the
+        # strike notional as maintenance. Capital is far smaller -> higher yield.
+        capital_req = put_capital_required(strike, put_premium, margin_min_pct)
+        raw_margin_yield = put_premium * 100 / capital_req * 100
         ann_margin_yield = raw_margin_yield / dte_days * 365
 
         # Breakeven: assigned stock cost basis = strike minus premium collected
@@ -352,7 +349,7 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float
             "iv_pct":          iv_pct,
             "raw_yield_pct":   round(raw_yield, 2),
             "ann_yield_pct":   round(annualised_yield, 1),
-            "margin_req":      round(margin_req, 0),
+            "capital_req":     round(capital_req, 0),
             "ann_margin_yield": round(ann_margin_yield, 1),
             "breakeven":       round(breakeven, 2),
             "be_move_pct":     round(be_move_pct, 1),
@@ -379,7 +376,7 @@ def print_results(results: list[dict]) -> None:
     header = (
         f"{'#':<3} {'Ticker':<7} {'Price':>7}{'':8} {'Exp':>12} {'DTE':>4} "
         f"{'Strike':>7} {'Delta':>6} {'Prem':>6} {'OTM%':>6} "
-        f"{'BE':>8} {'BE%':>6} {'IV%':>5} {'IVR':>5} {'AnnCol%':>7} {'AnnBP%':>7} "
+        f"{'BE':>8} {'BE%':>6} {'IV%':>5} {'IVR':>5} {'Cap$':>9} {'AnnCash%':>8} {'AnnMrgn%':>8} "
         f"{'Trend':>5} {'Score':>6} {'Note'}"
     )
     sep = "-" * len(header)
@@ -409,7 +406,7 @@ def print_results(results: list[dict]) -> None:
             f"{i:<3} {r['ticker']:<7} {r['price']:>7.2f}{price_tag:<8} {r['expiration']:>12} {r['dte']:>4} "
             f"{r['strike']:>7.2f} {r['delta']:>6.2f} {r['premium']:>6.2f} {r['otm_pct']:>5.1f}% "
             f"{r['breakeven']:>8.2f} {r['be_move_pct']:>5.1f}% "
-            f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['ann_yield_pct']:>6.1f}% {r['ann_margin_yield']:>6.1f}% "
+            f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['capital_req']:>9,.0f} {r['ann_yield_pct']:>7.1f}% {r['ann_margin_yield']:>7.1f}% "
             f"{r['trend_score']:>5} {r['composite_score']:>6.1f}  {', '.join(flags)}"
         )
 
@@ -423,8 +420,9 @@ def print_results(results: list[dict]) -> None:
     print("  BE%      = % the stock must drop to reach breakeven")
     print("  IV%      = implied/realised volatility annualised")
     print("  IVR      = IV Rank (0-100, higher = more elevated)")
-    print("  AnnCol%  = annualised yield on CASH collateral (cash-secured put)")
-    print("  AnnBP%   = annualised yield on BUYING POWER (margin / naked put)")
+    print("  Cap$     = capital / buying power tied up per contract (strike x 100 x maint%)")
+    print("  AnnCash% = annualised yield if FULLY cash-secured (100% of strike)")
+    print("  AnnMrgn% = annualised yield on the margin capital actually held (Cap$)")
     print("  Trend    = trend health score (0-100)")
     print("  Score    = composite opportunity score (higher = better)")
     print()
@@ -492,9 +490,11 @@ def main() -> None:
         help="Risk-free rate (default: 0.05)"
     )
     parser.add_argument(
-        "--margin-pct", type=float, default=0.10,
-        help="Naked-put margin floor as fraction of strike (default: 0.10 Reg-T; "
-             "raise to 0.15-0.30 for small-cap / high-vol names your broker marks up)"
+        "--margin-pct", type=float, default=0.20,
+        help="Maintenance margin as fraction of strike notional for a "
+             "cash-secured put sold on margin (default: 0.20). Use 1.0 for a "
+             "fully cash-secured put; raise to 0.25-0.50 for small-cap / "
+             "high-vol names your broker marks up."
     )
     args = parser.parse_args()
 
