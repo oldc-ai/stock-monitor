@@ -125,7 +125,7 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
         hist = tk.history(period="1y", auto_adjust=True)
         if hist.empty or len(hist) < 30:
             return None
-        closes = hist["Close"]
+        closes = hist["Close"].dropna()  # drop today's in-progress bar (NaN close)
 
         # Real-time (15-min delayed) price via fast_info; fall back to last close
         price_source = "RT"
