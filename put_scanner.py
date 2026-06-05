@@ -20,9 +20,8 @@ Ticker source priority:
 import argparse
 import sys
 import warnings
-from datetime import datetime, time as dtime
+from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import yaml
@@ -34,52 +33,9 @@ warnings.filterwarnings("ignore")
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
 
-# America/New_York requires the IANA tz database. On minimal images (e.g.
-# Streamlit Cloud) it may be missing; fall back to a fixed UTC-5/-4 offset so
-# import never fails. (Approximate DST handling is fine for a market-hours check.)
-try:
-    ET = ZoneInfo("America/New_York")
-except Exception:  # ZoneInfoNotFoundError or missing tzdata
-    from datetime import timezone, timedelta
-    ET = timezone(timedelta(hours=-4))  # Eastern Daylight Time (Mar-Nov)
-
 TARGET_DTE_MIN = 7
 TARGET_DTE_MAX = 21
 TARGET_DELTA = 0.25
-
-
-def market_is_open(now: datetime | None = None) -> bool:
-    """True if US equity market is in regular session (9:30-16:00 ET, Mon-Fri).
-
-    Ignores holidays (good enough for choosing live vs close-of-day data).
-    Options quotes are only reliable during this window; outside it we fall
-    back to daily-close + historical-vol estimates.
-    """
-    now = now or datetime.now(ET)
-    if now.weekday() >= 5:  # Saturday / Sunday
-        return False
-    return dtime(9, 30) <= now.timetz().replace(tzinfo=None) <= dtime(16, 0)
-
-
-# ---------------------------------------------------------------------------
-# Margin / buying power for short (naked) puts
-# ---------------------------------------------------------------------------
-
-def put_capital_required(K: float, premium: float, maintenance_pct: float = 1.0) -> float:
-    """Capital / buying power tied up per contract when selling a put.
-
-    maintenance_pct is the fraction of the strike notional the broker holds:
-      - 1.00  -> fully cash-secured put (hold the whole strike x 100 in cash)
-      - 0.20  -> margin account holding ~20% maintenance of the strike notional
-                 (a cash-secured put sold on margin)
-
-    Capital = strike * 100 * maintenance_pct, net of the premium received.
-
-    NOTE: Approximation. Real maintenance varies by broker and is often higher
-    for small-cap / low-priced / high-volatility stocks.
-    """
-    requirement = K * 100 * maintenance_pct
-    return max(requirement - premium * 100, premium * 100)  # net of credit
 
 
 # ---------------------------------------------------------------------------
@@ -162,86 +118,69 @@ def trend_score(closes, price=None):
 # Main scanner per ticker
 # ---------------------------------------------------------------------------
 
-def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float = 1.0) -> dict | None:
+def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
     try:
         tk = yf.Ticker(ticker)
-
-        mkt_open = market_is_open()
 
         hist = tk.history(period="1y", auto_adjust=True)
         if hist.empty or len(hist) < 30:
             return None
         closes = hist["Close"].dropna()  # drop today's in-progress bar (NaN close)
 
-        # Price source:
-        #   - Market open  -> live last price (fast_info)
-        #   - Market closed-> last traded price (~ today's close); fall back to
-        #     last daily close. Options markets are shut, so this is the right
-        #     reference for pricing tomorrow's contracts.
-        price_source = "live" if mkt_open else "close"
-        price = None
+        # Real-time (15-min delayed) price via fast_info; fall back to last close
+        price_source = "RT"
         try:
             rt_price = tk.fast_info.last_price
             if rt_price and rt_price > 0:
-                price = float(rt_price)
+                price = rt_price
+            else:
+                price = closes.iloc[-1]
+                price_source = "close"
         except Exception:
-            pass
-        if price is None:
-            price = float(closes.iloc[-1])
+            price = closes.iloc[-1]
             price_source = "close"
 
         hv20 = calc_hv(closes, 20)
         if hv20 is None:
             return None
 
-        # IV source: historical-vol baseline (always reliable). Only override
-        # with live options-chain IV during market hours, when quotes are real.
-        # After hours the chain returns stale/zero IV which corrupts everything.
         current_iv = hv20
-        iv_source = "HV"
 
-        if mkt_open:
-            try:
-                exps = tk.options
-                if exps:
-                    now = datetime.now()
-                    target_exps = []
+        # Try to get implied vol from nearest expiration in target window
+        try:
+            exps = tk.options
+            if exps:
+                now = datetime.now()
+                target_exps = []
+                for e in exps:
+                    exp_dt = datetime.strptime(e, "%Y-%m-%d")
+                    dte = (exp_dt - now).days
+                    if TARGET_DTE_MIN <= dte <= TARGET_DTE_MAX:
+                        target_exps.append((dte, e))
+                    elif dte > TARGET_DTE_MAX:
+                        break
+                if not target_exps:
                     for e in exps:
                         exp_dt = datetime.strptime(e, "%Y-%m-%d")
                         dte = (exp_dt - now).days
-                        if TARGET_DTE_MIN <= dte <= TARGET_DTE_MAX:
+                        if dte >= TARGET_DTE_MIN:
                             target_exps.append((dte, e))
-                        elif dte > TARGET_DTE_MAX:
                             break
-                    if not target_exps:
-                        for e in exps:
-                            exp_dt = datetime.strptime(e, "%Y-%m-%d")
-                            dte = (exp_dt - now).days
-                            if dte >= TARGET_DTE_MIN:
-                                target_exps.append((dte, e))
-                                break
-                    if target_exps:
-                        target_exps.sort()
-                        dte_days_iv, exp_str_iv = target_exps[0]
-                        T_iv = dte_days_iv / 365
-                        chain = tk.option_chain(exp_str_iv)
-                        puts = chain.puts
-                        if not puts.empty and "impliedVolatility" in puts.columns:
-                            target_strike = find_strike_for_delta(price, T_iv, risk_free_rate, hv20, TARGET_DELTA)
-                            band = puts[puts["strike"].between(target_strike * 0.90, target_strike * 1.10)]
-                            # Only trust IV from contracts with REAL two-sided
-                            # quotes (bid>0 AND ask>0). Early-session / thin
-                            # strikes report bid=ask=0 with garbage placeholder
-                            # IV (e.g. 0.0625), which must not be used.
-                            if not band.empty and "bid" in band and "ask" in band:
-                                live = band[(band["bid"] > 0) & (band["ask"] > 0)]
-                                iv_vals = live["impliedVolatility"]
-                                iv_vals = iv_vals[(iv_vals > 0.02) & (iv_vals < 5.0)]
-                                if not iv_vals.empty:
-                                    current_iv = float(iv_vals.mean())
-                                    iv_source = "chain"
-            except Exception:
-                pass
+                if target_exps:
+                    target_exps.sort()
+                    dte_days_iv, exp_str_iv = target_exps[0]
+                    T_iv = dte_days_iv / 365
+                    chain = tk.option_chain(exp_str_iv)
+                    puts = chain.puts
+                    if not puts.empty and "impliedVolatility" in puts.columns:
+                        target_strike = find_strike_for_delta(price, T_iv, risk_free_rate, hv20, TARGET_DELTA)
+                        atm_puts = puts[puts["strike"].between(target_strike * 0.90, target_strike * 1.10)]
+                        if not atm_puts.empty:
+                            iv_vals = atm_puts["impliedVolatility"].replace(0, np.nan).dropna()
+                            if not iv_vals.empty:
+                                current_iv = float(iv_vals.mean())
+        except Exception:
+            pass
 
         log_ret = np.log(closes / closes.shift(1)).dropna()
         iv_series = log_ret.rolling(20).std().dropna() * np.sqrt(252)
@@ -267,65 +206,27 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float
 
         T = dte_days / 365
         strike = find_strike_for_delta(price, T, risk_free_rate, current_iv, TARGET_DELTA)
+        put_premium = bs_put_price(price, strike, T, risk_free_rate, current_iv)
+        actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
 
-        # Snap the theoretical strike to the nearest REAL listed strike from the
-        # options chain (so we never report something like $227.49), and read
-        # the REAL premium from the chain rather than estimating it.
-        #
-        # Premium priority:
-        #   - Market open  : bid/ask mid (real-time), fall back to lastPrice
-        #   - Market closed : lastPrice (the last real traded value)
-        #   - Only fall back to a Black-Scholes estimate if the contract has no
-        #     real price at all (illiquid / never traded).
-        put_premium = None
-        prem_source = None
+        # Try to fetch actual market bid
+        market_bid = None
         try:
             chain = tk.option_chain(exp_str)
             puts = chain.puts
-            if not puts.empty and "strike" in puts.columns:
+            if not puts.empty:
                 row = puts.iloc[(puts["strike"] - strike).abs().argsort()[:1]]
-                strike = float(row["strike"].values[0])  # nearest real strike
-
-                bid       = float(row["bid"].values[0])       if "bid" in row else 0.0
-                ask       = float(row["ask"].values[0])       if "ask" in row else 0.0
-                last_px   = float(row["lastPrice"].values[0]) if "lastPrice" in row else 0.0
-
-                if mkt_open and bid > 0 and ask > 0:
-                    put_premium = round((bid + ask) / 2, 2)  # real-time mid
-                    prem_source = "mid"
-                elif mkt_open and bid > 0:
-                    put_premium = bid
-                    prem_source = "bid"
-                elif last_px > 0:
-                    put_premium = last_px                     # last real trade
-                    prem_source = "last"
+                market_bid = float(row["bid"].values[0])
+                if market_bid > 0:
+                    put_premium = market_bid
+                    strike = float(row["strike"].values[0])
         except Exception:
             pass
 
-        # Fall back to Black-Scholes only if no real market price was available.
-        if put_premium is None or put_premium <= 0:
-            put_premium = bs_put_price(price, strike, T, risk_free_rate, current_iv)
-            prem_source = "BS estimate"
-
-        actual_delta = round(-bs_put_delta(price, strike, T, risk_free_rate, current_iv), 3)
-
-        otm_pct = (price - strike) / price * 100
-
-        # Fully cash-secured yield: 100% of strike notional held in cash.
         collateral = strike * 100
         raw_yield = put_premium * 100 / collateral * 100
         annualised_yield = raw_yield / dte_days * 365
-
-        # Cash-secured-on-margin: broker only holds `margin_min_pct` of the
-        # strike notional as maintenance. Capital is far smaller -> higher yield.
-        capital_req = put_capital_required(strike, put_premium, margin_min_pct)
-        raw_margin_yield = put_premium * 100 / capital_req * 100
-        ann_margin_yield = raw_margin_yield / dte_days * 365
-
-        # Breakeven: assigned stock cost basis = strike minus premium collected
-        breakeven = strike - put_premium
-        be_move_pct = (breakeven - price) / price * 100  # negative = drop to BE
-
+        otm_pct = (price - strike) / price * 100
         ts = trend_score(closes, price=price)
 
         iv_rank_score = min(iv_rank or 50, 100)
@@ -353,16 +254,10 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05, margin_min_pct: float
             "iv_pct":          iv_pct,
             "raw_yield_pct":   round(raw_yield, 2),
             "ann_yield_pct":   round(annualised_yield, 1),
-            "capital_req":     round(capital_req, 0),
-            "ann_margin_yield": round(ann_margin_yield, 1),
-            "breakeven":       round(breakeven, 2),
-            "be_move_pct":     round(be_move_pct, 1),
             "trend_score":     ts,
             "composite_score": round(composite, 1),
-            "prem_source":     prem_source,
+            "prem_source":     "market bid" if market_bid else "BS estimate",
             "price_source":    price_source,
-            "iv_source":       iv_source,
-            "market_open":     mkt_open,
         }
 
     except Exception as e:
@@ -378,18 +273,14 @@ def print_results(results: list[dict]) -> None:
     results = sorted(results, key=lambda x: x["composite_score"], reverse=True)
 
     header = (
-        f"{'#':<3} {'Ticker':<7} {'Price':>7}{'':8} {'Exp':>12} {'DTE':>4} "
+        f"{'#':<3} {'Ticker':<7} {'Price':>7}{'':5} {'Exp':>12} {'DTE':>4} "
         f"{'Strike':>7} {'Delta':>6} {'Prem':>6} {'OTM%':>6} "
-        f"{'BE':>8} {'BE%':>6} {'IV%':>5} {'IVR':>5} {'Cap$':>9} {'AnnCash%':>8} {'AnnMrgn%':>8} "
-        f"{'Trend':>5} {'Score':>6} {'Note'}"
+        f"{'IV%':>5} {'IVR':>5} {'Ann%':>6} {'Trend':>5} {'Score':>6} {'Note'}"
     )
     sep = "-" * len(header)
 
-    mkt_open = results[0].get("market_open", False) if results else False
-    mkt_txt = "MARKET OPEN - live quotes" if mkt_open else "MARKET CLOSED - using last close + historical-vol estimates"
-
     print("\n" + "=" * len(header))
-    print("  PUT SELLING OPPORTUNITY SCANNER   [" + mkt_txt + "]")
+    print("  PUT SELLING OPPORTUNITY SCANNER")
     print("=" * len(header))
     print(header)
     print(sep)
@@ -407,10 +298,9 @@ def print_results(results: list[dict]) -> None:
 
         price_tag = f"({r.get('price_source', '?')})"
         print(
-            f"{i:<3} {r['ticker']:<7} {r['price']:>7.2f}{price_tag:<8} {r['expiration']:>12} {r['dte']:>4} "
+            f"{i:<3} {r['ticker']:<7} {r['price']:>7.2f}{price_tag:<5} {r['expiration']:>12} {r['dte']:>4} "
             f"{r['strike']:>7.2f} {r['delta']:>6.2f} {r['premium']:>6.2f} {r['otm_pct']:>5.1f}% "
-            f"{r['breakeven']:>8.2f} {r['be_move_pct']:>5.1f}% "
-            f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['capital_req']:>9,.0f} {r['ann_yield_pct']:>7.1f}% {r['ann_margin_yield']:>7.1f}% "
+            f"{r['iv_current']:>4.0f}% {r['iv_rank'] or 0:>4.0f}% {r['ann_yield_pct']:>5.1f}% "
             f"{r['trend_score']:>5} {r['composite_score']:>6.1f}  {', '.join(flags)}"
         )
 
@@ -420,13 +310,9 @@ def print_results(results: list[dict]) -> None:
     print("  Delta    = put delta (magnitude, ~0.25 target)")
     print("  Prem     = option premium per share ($)")
     print("  OTM%     = how far strike is below current price")
-    print("  BE       = breakeven price (strike - premium)")
-    print("  BE%      = % the stock must drop to reach breakeven")
     print("  IV%      = implied/realised volatility annualised")
     print("  IVR      = IV Rank (0-100, higher = more elevated)")
-    print("  Cap$     = capital / buying power tied up per contract (strike x 100 x maint%)")
-    print("  AnnCash% = annualised yield if FULLY cash-secured (100% of strike)")
-    print("  AnnMrgn% = annualised yield on the margin capital actually held (Cap$)")
+    print("  Ann%     = annualised premium yield on collateral")
     print("  Trend    = trend health score (0-100)")
     print("  Score    = composite opportunity score (higher = better)")
     print()
@@ -493,13 +379,6 @@ def main() -> None:
         "--rate", type=float, default=0.05,
         help="Risk-free rate (default: 0.05)"
     )
-    parser.add_argument(
-        "--margin-pct", type=float, default=1.0,
-        help="Capital held as fraction of strike notional (default: 1.0 = fully "
-             "cash-secured, matches a cash/CSP account like thinkorswim showing "
-             "full strike x 100 BP effect). Lower to ~0.20-0.25 only if you have "
-             "naked-put / Tier-3 approval and your broker frees up margin."
-    )
     args = parser.parse_args()
 
     global TARGET_DTE_MIN, TARGET_DTE_MAX, TARGET_DELTA
@@ -525,7 +404,7 @@ def main() -> None:
     results = []
     for t in tickers:
         print(f"  Fetching {t}...", end=" ", flush=True)
-        r = scan_ticker(t, risk_free_rate=args.rate, margin_min_pct=args.margin_pct)
+        r = scan_ticker(t, risk_free_rate=args.rate)
         if r:
             print(f"score={r['composite_score']}")
             results.append(r)

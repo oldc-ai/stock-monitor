@@ -12,7 +12,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from put_scanner import scan_ticker, TARGET_DTE_MIN, TARGET_DTE_MAX, TARGET_DELTA
 import put_scanner as _ps
-from put_scanner import market_is_open
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
@@ -71,18 +70,6 @@ with st.sidebar:
         "Risk-free rate", min_value=0.0, max_value=0.20, value=0.05, step=0.005, format="%.3f"
     )
 
-    margin_pct = st.slider(
-        "Capital held (% of strike)",
-        min_value=0.10,
-        max_value=1.00,
-        value=1.00,
-        step=0.05,
-        help="Fraction of the strike notional your broker ties up. 1.00 = fully "
-             "cash-secured (e.g. thinkorswim cash/CSP account showing the full "
-             "strike x 100 BP effect). Lower to ~0.20-0.25 only with naked-put / "
-             "Tier-3 approval; higher floors apply to small-cap / high-vol names.",
-    )
-
     run = st.button("Run Scan", type="primary", use_container_width=True)
 
 # ---------------------------------------------------------------------------
@@ -102,11 +89,6 @@ _ps.TARGET_DTE_MIN = int(dte_min)
 _ps.TARGET_DTE_MAX = int(dte_max)
 _ps.TARGET_DELTA   = float(delta)
 
-if market_is_open():
-    st.success("🟢 **Market is open** — using live prices and real-time options quotes.")
-else:
-    st.warning("🔴 **Market is closed** — using last close + historical-volatility estimates (options quotes are stale after hours).")
-
 st.subheader(f"Scanning {len(tickers)} tickers — DTE {dte_min}–{dte_max}, ~{delta:.0%} delta")
 progress = st.progress(0)
 status   = st.empty()
@@ -114,7 +96,7 @@ status   = st.empty()
 results = []
 for i, ticker in enumerate(tickers):
     status.text(f"Fetching {ticker}… ({i+1}/{len(tickers)})")
-    r = scan_ticker(ticker, risk_free_rate=float(rate), margin_min_pct=float(margin_pct))
+    r = scan_ticker(ticker, risk_free_rate=float(rate))
     if r:
         results.append(r)
     progress.progress((i + 1) / len(tickers))
@@ -153,13 +135,9 @@ for r in results:
         "Delta":       r["delta"],
         "Premium $":   r["premium"],
         "OTM %":       r["otm_pct"],
-        "Breakeven":   r["breakeven"],
-        "BE Move %":   r["be_move_pct"],
         "IV %":        r["iv_current"],
         "IVR":         r["iv_rank"] or 0,
-        "Capital $":   r["capital_req"],
-        "Ann/Cash %":  r["ann_yield_pct"],
-        "Ann/Margin %": r["ann_margin_yield"],
+        "Ann Yield %": r["ann_yield_pct"],
         "Trend":       r["trend_score"],
         "Score":       r["composite_score"],
         "Flags":       ", ".join(flags),
@@ -193,19 +171,15 @@ styled = (
     .map(colour_score, subset=["Score"])
     .map(colour_ivr,   subset=["IVR"])
     .format({
-        "Price":        "${:.2f}",
-        "Strike":       "${:.2f}",
-        "Premium $":    "${:.2f}",
-        "OTM %":        "{:.1f}%",
-        "Breakeven":    "${:.2f}",
-        "BE Move %":    "{:.1f}%",
-        "IV %":         "{:.0f}%",
-        "IVR":          "{:.0f}%",
-        "Capital $":    "${:,.0f}",
-        "Ann/Cash %":   "{:.1f}%",
-        "Ann/Margin %": "{:.1f}%",
-        "Score":        "{:.1f}",
-        "Delta":        "{:.2f}",
+        "Price":       "${:.2f}",
+        "Strike":      "${:.2f}",
+        "Premium $":   "${:.2f}",
+        "OTM %":       "{:.1f}%",
+        "IV %":        "{:.0f}%",
+        "IVR":         "{:.0f}%",
+        "Ann Yield %": "{:.1f}%",
+        "Score":       "{:.1f}",
+        "Delta":       "{:.2f}",
     })
 )
 
@@ -242,15 +216,9 @@ with st.expander("Column guide"):
 | **Delta** | Put delta magnitude (~0.25–0.30 target) |
 | **Premium $** | Option premium per share |
 | **OTM %** | How far the strike is below current price |
-| **Breakeven** | Cost basis if assigned = strike − premium |
-| **BE Move %** | How far the stock must drop to reach breakeven |
 | **IV %** | Implied/realised volatility annualised |
 | **IVR** | IV Rank — where current IV sits in its 52-week range (higher = more elevated, better to sell) |
-| **Capital $** | Buying power tied up per contract = strike × 100 × maintenance% − premium |
-| **Ann/Cash %** | Annualised yield if **fully cash-secured** (100% of strike held) |
-| **Ann/Margin %** | Annualised yield on the **margin capital actually held** (Capital $ — uses the maintenance % set in the sidebar) |
+| **Ann Yield %** | Annualised premium yield on collateral held |
 | **Trend** | Trend health score: price vs SMA20/50/200 + momentum (0–100) |
 | **Score** | Composite opportunity score (higher = better) |
-
-*Margin note: Capital $ is an approximation — it applies your maintenance % to the strike notional. Actual requirements vary by broker, account type, and are frequently higher for small-cap / low-priced / high-volatility stocks.*
 """)
