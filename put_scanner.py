@@ -150,19 +150,19 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
         try:
             exps = tk.options
             if exps:
-                now = datetime.now()
+                today = datetime.now().date()
                 target_exps = []
                 for e in exps:
-                    exp_dt = datetime.strptime(e, "%Y-%m-%d")
-                    dte = (exp_dt - now).days
+                    exp_dt = datetime.strptime(e, "%Y-%m-%d").date()
+                    dte = (exp_dt - today).days  # whole calendar days
                     if TARGET_DTE_MIN <= dte <= TARGET_DTE_MAX:
                         target_exps.append((dte, e))
                     elif dte > TARGET_DTE_MAX:
                         break
                 if not target_exps:
                     for e in exps:
-                        exp_dt = datetime.strptime(e, "%Y-%m-%d")
-                        dte = (exp_dt - now).days
+                        exp_dt = datetime.strptime(e, "%Y-%m-%d").date()
+                        dte = (exp_dt - today).days
                         if dte >= TARGET_DTE_MIN:
                             target_exps.append((dte, e))
                             break
@@ -192,10 +192,10 @@ def scan_ticker(ticker: str, risk_free_rate: float = 0.05) -> dict | None:
         try:
             exps = tk.options
             if exps:
-                now = datetime.now()
+                today = datetime.now().date()
                 for e in exps:
-                    exp_dt = datetime.strptime(e, "%Y-%m-%d")
-                    d = (exp_dt - now).days
+                    exp_dt = datetime.strptime(e, "%Y-%m-%d").date()
+                    d = (exp_dt - today).days  # whole calendar days
                     if d >= TARGET_DTE_MIN:
                         dte_days = d
                         exp_str = e
